@@ -7,15 +7,15 @@ const TARGET_NAMES = ["Grace Octaviani", "Gracie"];
 
 async function checkGracieShows() {
     try {
-        // Ambil bulan dan tahun saat script dijalankan
+        // Ambil bulan dan tahun saat script dijalankan secara dinamis
         const now = new Date();
-        const currentMonth = now.getMonth() + 1; // getMonth() dimulai dari 0
+        const currentMonth = now.getMonth() + 1;
         const currentYear = now.getFullYear();
 
         // 1. Endpoint List Jadwal
         const scheduleListUrl = `https://jkt48.com/api/v1/schedules?lang=id&month=${currentMonth}&year=${currentYear}`;
         
-        console.log(`Fetching jadwal dari: ${scheduleListUrl}`);
+        console.log(`Mengambil data jadwal dari: ${scheduleListUrl}`);
         const resList = await fetch(scheduleListUrl);
         const resultList = await resList.json();
 
@@ -24,9 +24,9 @@ async function checkGracieShows() {
             return;
         }
 
-        // Filter hanya event bertipe "SHOW" yang memiliki reference_code
+        // Filter hanya event bertipe "SHOW" yang memiliki reference_code dan berstatus true
         const shows = resultList.data.filter(item => item.type === "SHOW" && item.reference_code && item.status);
-        console.log(`Ditemukan ${shows.length} show. Memeriksa detail lineup member...`);
+        console.log(`Ditemukan ${shows.length} show bulan ini. Memeriksa detail lineup member...`);
 
         for (const show of shows) {
             // 2. Endpoint Detail Show menggunakan reference_code
@@ -47,7 +47,7 @@ async function checkGracieShows() {
                 );
 
                 if (isGraciePerforming) {
-                    console.log(`[FOUND] Gracie tampil di show: ${detailData.title} (${detailData.date})`);
+                    console.log(`[DITEMUKAN] Gracie tampil di show: ${detailData.title} (${detailData.date})`);
                     await sendToDiscord(detailData, show.schedule_id);
                 }
             } catch (err) {
@@ -61,7 +61,7 @@ async function checkGracieShows() {
 
 async function sendToDiscord(showDetail, scheduleId) {
     if (!WEBHOOK_URL) {
-        console.error("DISCORD_WEBHOOK_URL belum diset!");
+        console.error("DISCORD_WEBHOOK_URL belum diset dalam Secrets GitHub!");
         return;
     }
 

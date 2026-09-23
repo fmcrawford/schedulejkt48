@@ -2,6 +2,7 @@ import os
 import datetime
 import json
 import requests
+from curl_cffi import requests as cffi_requests
 
 # Ambil Webhook URL dari Environment Variables Cloud
 DISCORD_WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL")

@@ -1,0 +1,25 @@
+name: Gracie Schedule Announcer
+
+on:
+  schedule:
+    # Berjalan setiap hari jam 12:00 WIB (05:00 UTC)
+    - cron: '0 5 * * *'
+  workflow_dispatch:
+
+jobs:
+  check-and-announce:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Run Announcer Bot
+        env:
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          DISCORD_ROLE_ID: ${{ secrets.DISCORD_ROLE_ID }}
+        run: npm start

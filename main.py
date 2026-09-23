@@ -1,44 +1,57 @@
 import os
 import datetime
 import json
-from curl_cffi import requests as cffi_requests
+from curl_cffi import requests
 
-# Ambil Webhook URL dari Environment Variables Cloud
 DISCORD_WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL")
 SENT_SHOWS_FILE = "sent_shows.json"
 
+HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+    "Accept": "application/json, text/plain, */*",
+    "Referer": "https://jkt48.com/"
+}
+
 def load_sent_shows():
-    """Membaca daftar ID show yang sudah pernah dinotifikasi."""
     if os.path.exists(SENT_SHOWS_FILE):
         try:
             with open(SENT_SHOWS_FILE, "r") as f:
                 return set(json.load(f))
-        except Exception:
+        except Exception as e:
+            print(f"⚠️ Gagal membaca {SENT_SHOWS_FILE}: {e}")
             return set()
     return set()
 
 def save_sent_shows(sent_shows):
-    """Menyimpan daftar ID show yang sudah dinotifikasi."""
-    with open(SENT_SHOWS_FILE, "w") as f:
-        json.dump(list(sent_shows), f, indent=2)
+    try:
+        with open(SENT_SHOWS_FILE, "w") as f:
+            json.dump(list(sent_shows), f, indent=2)
+    except Exception as e:
+        print(f"⚠️ Gagal menyimpan {SENT_SHOWS_FILE}: {e}")
 
 def send_discord_status(message):
-    """Mengirim pesan status sistem ke Discord."""
     if not DISCORD_WEBHOOK_URL:
-        raise ValueError("❌ Error: DISCORD_WEBHOOK_URL tidak ditemukan di GitHub Secrets!")
+        print("❌ WARNING: DISCORD_WEBHOOK_URL belum diset di GitHub Secrets!")
+        return
 
     payload = {
         "embeds": [{
             "title": "🔍 JKT48 Oshi Checker Active",
             "description": message,
-            "color": 0x3498DB, # Warna Biru
+            "color": 0x3498DB,
             "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat()
         }]
     }
-    requests.post(DISCORD_WEBHOOK_URL, json=payload)
+    try:
+        requests.post(DISCORD_WEBHOOK_URL, json=payload, impersonate="chrome")
+    except Exception as e:
+        print(f"❌ Gagal mengirim status ke Discord: {e}")
 
 def send_discord_notification(show, members_found, ref_code, detail_data):
-    """Mengirim pesan notifikasi berformat Embed ke Discord."""
+    if not DISCORD_WEBHOOK_URL:
+        print("❌ WARNING: DISCORD_WEBHOOK_URL belum diset di GitHub Secrets!")
+        return
+
     title = show.get("title", "Theater Show")
     date_str = show.get("date")
     start_time = show.get("start_time", "-")
@@ -56,7 +69,7 @@ def send_discord_notification(show, members_found, ref_code, detail_data):
         "title": f"🎭 {title}",
         "description": f"✨ **Oshi Kamu Tampil!** ({oshi_str})",
         "url": show_url,
-        "color": 0xFF69B4, # Warna Pink Hot
+        "color": 0xFF69B4,
         "fields": [
             {
                 "name": "📅 Tanggal Pertunjukan",
@@ -90,20 +103,23 @@ def send_discord_notification(show, members_found, ref_code, detail_data):
         "embeds": [embed]
     }
 
-    res = requests.post(DISCORD_WEBHOOK_URL, json=payload)
-    if res.status_code in [200, 204]:
-        print(f"✅ Notifikasi dikirim ke Discord untuk Show ID: {schedule_id}")
-    else:
-        print(f"❌ Gagal kirim notifikasi Discord: {res.status_code} - {res.text}")
+    try:
+        res = requests.post(DISCORD_WEBHOOK_URL, json=payload, impersonate="chrome")
+        if res.status_code in [200, 204]:
+            print(f"✅ Notifikasi dikirim ke Discord untuk Show ID: {schedule_id}")
+        else:
+            print(f"❌ Gagal kirim notifikasi Discord: {res.status_code} - {res.text}")
+    except Exception as e:
+        print(f"❌ Exception saat kirim notifikasi: {e}")
 
 def check_schedules():
     if not DISCORD_WEBHOOK_URL:
-        raise ValueError("❌ Error: Variable DISCORD_WEBHOOK_URL belum terpasang di GitHub Secrets!")
+        print("❌ CRITICAL ERROR: Secret 'DISCORD_WEBHOOK_URL' tidak ditemukan di GitHub Actions Settings!")
+        return
 
     sent_shows = load_sent_shows()
     now = datetime.datetime.now()
     
-    # 1. Kirim notifikasi awal bahwa bot mulai berjalan
     print("🚀 Memulai pemeriksaan jadwal JKT48...")
     send_discord_status(f"Mulai mengecek API JKT48 untuk periode `{now.strftime('%d %B %Y')}` hingga 14 hari ke depan...")
 
@@ -119,11 +135,14 @@ def check_schedules():
     for month, year in months_to_check:
         url = f"https://jkt48.com/api/v1/schedules?lang=id&month={month}&year={year}"
         try:
-            res = requests.get(url, timeout=10)
-            data = res.json()
+            res = requests.get(url, headers=HEADERS, impersonate="chrome", timeout=15)
             
+            if res.status_code != 200:
+                print(f"⚠️ Gagal akses API bulanan (Status Code: {res.status_code})")
+                continue
+
+            data = res.json()
             if not data.get("status"):
-                print(f"⚠️ Gagal ambil data bulan {month}-{year}")
                 continue
 
             schedules = data.get("data", [])
@@ -140,30 +159,34 @@ def check_schedules():
 
                 show_date = datetime.datetime.strptime(show_date_str, "%Y-%m-%d").date()
                 
-                # Cek jadwal dari hari ini hingga 14 hari ke depan
                 if now.date() <= show_date <= now.date() + datetime.timedelta(days=14):
                     scanned_shows_count += 1
                     
-                    # Ambil detail line-up
                     detail_url = f"https://jkt48.com/api/v1/theater-shows/{ref_code}?lang=id"
-                    detail_res = requests.get(detail_url, timeout=10)
+                    detail_res = requests.get(detail_url, headers=HEADERS, impersonate="chrome", timeout=15)
+                    
+                    if detail_res.status_code != 200:
+                        continue
+
                     detail_data = detail_res.json()
 
                     if detail_data.get("status") and "data" in detail_data:
                         members = detail_data["data"].get("jkt48_member", [])
-                        member_names = [m["name"] for m in members]
-
+                        
                         found = []
-                        if "Grace Octaviani" in member_names:
-                            found.append("Gracie 🦖")
-                        if "Michelle Alexandra" in member_names:
-                            found.append("Michie 🐰")
+                        for m in members:
+                            m_name = m.get("name", "").lower()
+                            if "grace octaviani" in m_name or "gracie" in m_name:
+                                if "Gracie 🦖" not in found:
+                                    found.append("Gracie 🦖")
+                            if "michelle alexandra" in m_name or "michie" in m_name:
+                                if "Michie 🐰" not in found:
+                                    found.append("Michie 🐰")
 
                         if found:
                             found_any = True
                             print(f"🎯 Ditemukan Oshi ({', '.join(found)}) pada show: {show.get('title')} ({show_date_str})")
                             
-                            # Kirim ke Discord jika belum pernah dikirim
                             if show_id not in sent_shows:
                                 send_discord_notification(show, found, ref_code, detail_data["data"])
                                 sent_shows.add(show_id)
@@ -171,9 +194,8 @@ def check_schedules():
                                 print(f"ℹ️ Show ID {show_id} sudah pernah dinotifikasi sebelumnya.")
 
         except Exception as e:
-            print(f"❌ Terjadi kesalahan: {e}")
+            print(f"❌ Terjadi kesalahan pada proses scan: {e}")
 
-    # Simpan riwayat ID show
     save_sent_shows(sent_shows)
     
     print(f"📊 Selesai memindai {scanned_shows_count} show pertunjukan.")

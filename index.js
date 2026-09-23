@@ -1,68 +1,91 @@
 // index.js
 const WEBHOOK_URL = process.env.DISCORD_WEBHOOK_URL;
-const ROLE_ID = process.env.DISCORD_ROLE_ID || ""; // Kosongkan jika tidak ingin mention role tertentu
+const ROLE_ID = process.env.DISCORD_ROLE_ID || ""; 
 
-// Ganti URL ini dengan Endpoint API jadwal yang sesungguhnya
-const SCHEDULE_API_URL = "https://api.example.com/jkt48-schedule"; 
+// Target member yang dicari
+const TARGET_NAMES = ["Grace Octaviani", "Gracie"];
 
-async function fetchSchedules() {
+async function checkGracieShows() {
     try {
-        // Uncomment blok ini saat API sudah siap:
-        /*
-        const response = await fetch(SCHEDULE_API_URL);
-        const apiData = await response.json();
-        const schedules = apiData.data;
-        */
+        // Ambil bulan dan tahun saat script dijalankan
+        const now = new Date();
+        const currentMonth = now.getMonth() + 1; // getMonth() dimulai dari 0
+        const currentYear = now.getFullYear();
+
+        // 1. Endpoint List Jadwal
+        const scheduleListUrl = `https://jkt48.com/api/v1/schedules?lang=id&month=${currentMonth}&year=${currentYear}`;
         
-        // --- MOCK DATA SEBAGAI CONTOH ---
-        const schedules = [
-            {
-                schedule_id: 7332,
-                date: "2026-09-24",
-                start_time: "19:00:00",
-                title: "Sambil Menggandeng Erat Tanganku",
-                jkt48_member_type: "DREAM"
-            }
-        ];
+        console.log(`Fetching jadwal dari: ${scheduleListUrl}`);
+        const resList = await fetch(scheduleListUrl);
+        const resultList = await resList.json();
 
-        // FILTER: Gracie (Misalnya memfilter berdasarkan setlist/tim)
-        const gracieShows = schedules.filter(show => 
-            show.jkt48_member_type === "DREAM" || show.title.includes("Pajama Drive")
-        );
-
-        if (gracieShows.length === 0) {
-            console.log("Belum ada jadwal terbaru untuk Gracie saat ini.");
+        if (!resultList.status || !Array.isArray(resultList.data)) {
+            console.error("Gagal mengambil daftar jadwal dari API JKT48.");
             return;
         }
 
-        for (const show of gracieShows) {
-            await sendToDiscord(show);
-        }
+        // Filter hanya event bertipe "SHOW" yang memiliki reference_code
+        const shows = resultList.data.filter(item => item.type === "SHOW" && item.reference_code && item.status);
+        console.log(`Ditemukan ${shows.length} show. Memeriksa detail lineup member...`);
 
+        for (const show of shows) {
+            // 2. Endpoint Detail Show menggunakan reference_code
+            const detailUrl = `https://jkt48.com/api/v1/theater-shows/${show.reference_code}?lang=id`;
+
+            try {
+                const resDetail = await fetch(detailUrl);
+                const resultDetail = await resDetail.json();
+
+                if (!resultDetail.status || !resultDetail.data) continue;
+
+                const detailData = resultDetail.data;
+                const members = detailData.jkt48_member || [];
+
+                // Cek keberadaan Grace Octaviani / Gracie di lineup
+                const isGraciePerforming = members.some(m =>
+                    TARGET_NAMES.some(target => m.name.toLowerCase().includes(target.toLowerCase()))
+                );
+
+                if (isGraciePerforming) {
+                    console.log(`[FOUND] Gracie tampil di show: ${detailData.title} (${detailData.date})`);
+                    await sendToDiscord(detailData, show.schedule_id);
+                }
+            } catch (err) {
+                console.error(`Gagal mengambil detail show ${show.reference_code}:`, err);
+            }
+        }
     } catch (error) {
-        console.error("Gagal mengambil data jadwal:", error);
+        console.error("Gagal memproses API JKT48:", error);
     }
 }
 
-async function sendToDiscord(show) {
+async function sendToDiscord(showDetail, scheduleId) {
     if (!WEBHOOK_URL) {
-        console.error("DISCORD_WEBHOOK_URL belum diset! Masukkan ke GitHub Secrets.");
+        console.error("DISCORD_WEBHOOK_URL belum diset!");
         return;
     }
 
     const mention = ROLE_ID ? `<@&${ROLE_ID}>\n` : "";
-    const detailUrl = `https://jkt48.com/theater/schedule/id/${show.schedule_id}`;
+    const detailLink = `https://jkt48.com/theater/schedule/id/${scheduleId}`;
+    
+    // Susun daftar lineup member yang tampil
+    const memberNames = showDetail.jkt48_member.map(m => m.name).join(", ");
+    const formattedMemberList = memberNames.length > 1000 
+        ? memberNames.substring(0, 997) + "..." 
+        : memberNames;
 
     const payload = {
-        content: `${mention}📢 **Jadwal Show Terbaru Gracie JKT48!** 📢\nAyo ramaikan teater dan dukung Gracie!`,
+        content: `${mention}📢 **Jadwal Show Terbaru Gracie JKT48!** 📢\nGrace Octaviani terkonfirmasi tampil di show berikut:`,
         embeds: [
             {
-                title: "🎭 " + show.title,
-                color: 16758465, // Pink Color Pastel
+                title: `🎭 ${showDetail.title}`,
+                color: 16758465, // Pink Pastel
                 fields: [
-                    { name: "🗓️ Tanggal", value: show.date, inline: true },
-                    { name: "⏰ Waktu", value: `${show.start_time} WIB`, inline: true },
-                    { name: "🎟️ Tiket & Detail", value: `[Klik di sini](${detailUrl})`, inline: false }
+                    { name: "🗓️ Tanggal", value: showDetail.date, inline: true },
+                    { name: "⏰ Waktu", value: `${showDetail.start_time} - ${showDetail.end_time} WIB`, inline: true },
+                    { name: "🏷️ Tim / Tipe", value: showDetail.jkt48_member_type || "-", inline: true },
+                    { name: "👥 Lineup Member", value: formattedMemberList, inline: false },
+                    { name: "🎟️ Detail & Tiket", value: `[Buka Web JKT48](${detailLink})`, inline: false }
                 ],
                 footer: { text: "JKT48 Theater Schedule Bot" },
                 timestamp: new Date().toISOString()
@@ -78,13 +101,13 @@ async function sendToDiscord(show) {
         });
 
         if (res.ok) {
-            console.log(`Berhasil mengirim jadwal ${show.title} ke Discord!`);
+            console.log(`Berhasil mengirim pengumuman ${showDetail.title} ke Discord.`);
         } else {
-            console.error(`Gagal mengirim ke Discord: ${res.status} ${res.statusText}`);
+            console.error(`Gagal mengirim ke Discord. Status: ${res.status}`);
         }
-    } catch (error) {
-        console.error("Error webhook:", error);
+    } catch (err) {
+        console.error("Error Webhook:", err);
     }
 }
 
-fetchSchedules();
+checkGracieShows();

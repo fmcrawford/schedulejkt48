@@ -1,0 +1,12 @@
+{
+  "name": "gracie-discord-bot",
+  "version": "1.0.0",
+  "description": "JKT48 Schedule Announcer for Discord",
+  "main": "index.js",
+  "type": "module",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "author": "",
+  "license": "ISC"
+}

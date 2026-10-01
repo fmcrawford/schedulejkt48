@@ -1,206 +1,315 @@
-import os
+import time
+import threading
 import datetime
-import json
-from curl_cffi import requests
+import requests
+from curl_cffi import requests as cffi_requests
 
-DISCORD_WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL")
-SENT_SHOWS_FILE = "sent_shows.json"
+# ==========================================
+# KONFIGURASI BOT
+# ==========================================
+EXCLUSIVE_URL = "https://jkt48.com/purchase/exclusive?code=EX5B99"
+API_URL = "https://jkt48.com/api/v1/exclusives/EX5B99/bonus?lang=id"
+LOGO_URL = "https://jkt48.com/images/ogp.png"
 
-HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-    "Accept": "application/json, text/plain, */*",
-    "Referer": "https://jkt48.com/"
-}
+CHECK_INTERVAL = 15          # Jeda cek API (detik)
 
-def load_sent_shows():
-    if os.path.exists(SENT_SHOWS_FILE):
-        try:
-            with open(SENT_SHOWS_FILE, "r") as f:
-                return set(json.load(f))
-        except Exception as e:
-            print(f"⚠️ Gagal membaca {SENT_SHOWS_FILE}: {e}")
-            return set()
-    return set()
+DISCORD_WEBHOOK_URL = "https://discord.com/api/webhooks/1551816204765757461/ZbVmJs9XuXkqmoG228EMPDaeShlCJJejftwY_DA1BL0OlW6HlL1U-flp76DK28eL3JbB"
 
-def save_sent_shows(sent_shows):
-    try:
-        with open(SENT_SHOWS_FILE, "w") as f:
-            json.dump(list(sent_shows), f, indent=2)
-    except Exception as e:
-        print(f"⚠️ Gagal menyimpan {SENT_SHOWS_FILE}: {e}")
+# Target Oshi / Notifikasi Khusus
+SPECIAL_TARGETS = ["Michelle Alexandra", "Aurhel Alana", "Grace Octaviani"]
 
-def send_discord_status(message):
-    if not DISCORD_WEBHOOK_URL:
-        print("❌ WARNING: DISCORD_WEBHOOK_URL belum diset di GitHub Secrets!")
+# Warna Embed Discord
+COLOR_GREEN = 0x2ECC71   # Startup / Rekap Ada Slot
+COLOR_RED = 0xE74C3C     # Startup / Rekap Sold Out
+COLOR_GOLD = 0xF1C40F    # Special Oshi Alert
+COLOR_BLUE = 0x3498DB    # Restock Alert
+COLOR_PURPLE = 0x9B59B6  # Rekap Terjadwal
+
+# ==========================================
+# FUNGSI PENDUKUNG DISCORD EMBED
+# ==========================================
+def send_discord_embed(title, color, description=None, fields=None, content_text=None, thumbnail_url=LOGO_URL):
+    if not DISCORD_WEBHOOK_URL: 
         return
-
-    payload = {
-        "embeds": [{
-            "title": "🔍 JKT48 Oshi Checker Active",
-            "description": message,
-            "color": 0x3498DB,
-            "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat()
-        }]
-    }
-    try:
-        requests.post(DISCORD_WEBHOOK_URL, json=payload, impersonate="chrome")
-    except Exception as e:
-        print(f"❌ Gagal mengirim status ke Discord: {e}")
-
-def send_discord_notification(show, members_found, ref_code, detail_data):
-    if not DISCORD_WEBHOOK_URL:
-        print("❌ WARNING: DISCORD_WEBHOOK_URL belum diset di GitHub Secrets!")
-        return
-
-    title = show.get("title", "Theater Show")
-    date_str = show.get("date")
-    start_time = show.get("start_time", "-")
-    end_time = show.get("end_time", "-")
-    schedule_id = show.get("schedule_id")
-    member_type = show.get("jkt48_member_type", "SHOW")
-    
-    oshi_str = " & ".join(members_found)
-    show_url = f"https://jkt48.com/theater/schedule/id/{schedule_id}"
-    
-    all_members = [m["name"] for m in detail_data.get("jkt48_member", [])]
-    member_list_text = ", ".join(all_members) if all_members else "Belum ada informasi"
 
     embed = {
-        "title": f"🎭 {title}",
-        "description": f"✨ **Oshi Kamu Tampil!** ({oshi_str})",
-        "url": show_url,
-        "color": 0xFF69B4,
-        "fields": [
-            {
-                "name": "📅 Tanggal Pertunjukan",
-                "value": f"`{date_str}`",
-                "inline": True
-            },
-            {
-                "name": "⏰ Jam",
-                "value": f"`{start_time} - {end_time} WIB`",
-                "inline": True
-            },
-            {
-                "name": "🏷️ Kategori",
-                "value": f"`{member_type}`",
-                "inline": True
-            },
-            {
-                "name": "👥 Member Tampil (Line-up)",
-                "value": member_list_text[:1000],
-                "inline": False
-            }
-        ],
-        "footer": {
-            "text": f"JKT48 Schedule Bot • Ref Code: {ref_code}"
+        "title": title,
+        "color": color,
+        "author": {
+            "name": "JKT48 2-Shot Ticket Monitor",
+            "icon_url": LOGO_URL
         },
-        "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat()
+        "footer": {
+            "text": "JKT48 Official Event Monitor • Real-time Notification"
+        },
+        "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
     }
 
-    payload = {
-        "content": "📢 **ALERT JADWAL OSHI TERDETEKSI!** @everyone",
-        "embeds": [embed]
-    }
+    if description:
+        embed["description"] = description
+    if fields:
+        embed["fields"] = fields
+    if thumbnail_url:
+        embed["thumbnail"] = {"url": thumbnail_url}
 
+    payload = {}
+    if content_text:
+        payload["content"] = content_text
+    payload["embeds"] = [embed]
+
+    def send():
+        try:
+            requests.post(DISCORD_WEBHOOK_URL, json=payload, timeout=10)
+        except Exception:
+            pass
+
+    threading.Thread(target=send).start()
+
+def fetch_api():
     try:
-        res = requests.post(DISCORD_WEBHOOK_URL, json=payload, impersonate="chrome")
-        if res.status_code in [200, 204]:
-            print(f"✅ Notifikasi dikirim ke Discord untuk Show ID: {schedule_id}")
-        else:
-            print(f"❌ Gagal kirim notifikasi Discord: {res.status_code} - {res.text}")
-    except Exception as e:
-        print(f"❌ Exception saat kirim notifikasi: {e}")
+        r = cffi_requests.get(API_URL, impersonate="chrome", timeout=15)
+        if r.status_code == 200:
+            return r.json()
+    except Exception:
+        pass
+    return None
 
-def check_schedules():
-    if not DISCORD_WEBHOOK_URL:
-        print("❌ CRITICAL ERROR: Secret 'DISCORD_WEBHOOK_URL' tidak ditemukan di GitHub Actions Settings!")
+def parse_api_data(response_json):
+    parsed_items = []
+    if not response_json or not isinstance(response_json, dict): 
+        return parsed_items
+    
+    sessions = response_json.get("data", [])
+
+    for session_obj in sessions:
+        if not isinstance(session_obj, dict): 
+            continue
+        session_name = session_obj.get("label", "-")
+        
+        for detail in session_obj.get("session_members", []):
+            if not isinstance(detail, dict): 
+                continue
+            
+            track = detail.get("label", "-")
+            member_name = detail.get("member_name", "Unknown")
+            quota = int(detail.get("available_quota", 0))
+            detail_code = detail.get("session_detail_code", f"{member_name}_{session_name}_{track}")
+            
+            parsed_items.append({
+                "id": detail_code,
+                "name": member_name,
+                "session": session_name,
+                "track": track,
+                "quota": quota
+            })
+            
+    return parsed_items
+
+# ==========================================
+# LOGIC UTAMA
+# ==========================================
+def main():
+    print("Mulai inisiasi bot dan mengambil data API JKT48...\n")
+    
+    data = None
+    while not data:
+        data = fetch_api()
+        if not data:
+            print("⏳ Menunggu data API...")
+            time.sleep(5)
+            
+    members = parse_api_data(data)
+    if not members:
+        print("❌ Gagal memetakan data. Struktur JSON API mungkin berbeda.")
         return
 
-    sent_shows = load_sent_shows()
-    now = datetime.datetime.now()
+    prev_state = {m["id"]: m for m in members}
     
-    print("🚀 Memulai pemeriksaan jadwal JKT48...")
-    send_discord_status(f"Mulai mengecek API JKT48 untuk periode `{now.strftime('%d %B %Y')}` hingga 14 hari ke depan...")
+    # Melacak penambahan stok di antara waktu rekap (tiap 12 jam)
+    restocked_data = {}
 
-    months_to_check = [(now.month, now.year)]
-    if now.day > 20:
-        next_month = 1 if now.month == 12 else now.month + 1
-        next_year = now.year + 1 if now.month == 12 else now.year
-        months_to_check.append((next_month, next_year))
+    # ----------------------------------------------------------------
+    # FASE 1: TAMPILKAN SELURUH DATA (SANITY CHECK)
+    # ----------------------------------------------------------------
+    print("=== STATUS AWAL SELURUH MEMBER (SANITY CHECK) ===")
+    total_quota_available = 0
+    special_at_startup = []
 
-    found_any = False
-    scanned_shows_count = 0
+    for m in members:
+        quota_num = m["quota"]
+        total_quota_available += quota_num
+        status_text = f"✅ Sisa: {quota_num}" if quota_num > 0 else "❌ Sold Out"
+        
+        if quota_num > 0 and m["name"] in SPECIAL_TARGETS:
+            special_at_startup.append(m)
+        
+        print(f"[{status_text}] {m['name']} - {m['session']} ({m['track']})")
+        
+    print("-" * 50)
+    print(f"Total Slot Terbaca: {len(members)} | Total Tiket Tersedia: {total_quota_available}")
+    print("-" * 50)
 
-    for month, year in months_to_check:
-        url = f"https://jkt48.com/api/v1/schedules?lang=id&month={month}&year={year}"
-        try:
-            res = requests.get(url, headers=HEADERS, impersonate="chrome", timeout=15)
+    # 1. Alert Khusus jika Target Oshi Tersedia di Startup
+    if special_at_startup:
+        for sp in special_at_startup:
+            fields = [
+                {"name": "Nama Member", "value": f"**{sp['name']}**", "inline": True},
+                {"name": "Sesi / Jalur", "value": f"`{sp['session']}` • `{sp['track']}`", "inline": True},
+                {"name": "Sisa Kuota", "value": f"🎫 **{sp['quota']} Tiket**", "inline": True},
+                {"name": "Akses Cepat", "value": f"⚡ [**KLIK DI SINI UNTUK BELI SEKARANG**]({EXCLUSIVE_URL})", "inline": False}
+            ]
+            send_discord_embed(
+                title="🌟 STARTUP SPECIAL OSHI ALERT",
+                color=COLOR_GOLD,
+                fields=fields,
+                content_text="@everyone **Target Oshi kamu tersedia sejak bot aktif!**"
+            )
+
+    # 2. Notifikasi Rekap Startup Umum
+    available_list = [m for m in members if m["quota"] > 0]
+    if available_list:
+        lines = [f"• **{m['name']}** — `{m['session']}` | `{m['track']}` (Sisa: **{m['quota']}**)" for m in available_list]
+        chunk_str = "\n".join(lines[:20])
+        if len(lines) > 20:
+            chunk_str += f"\n\n*...dan {len(lines) - 20} slot lainnya.*"
+
+        fields = [
+            {"name": "Ringkasan Sistem", "value": f"Total Slot Terbuka: **{len(available_list)}**\nTotal Tiket: **{total_quota_available} Tiket**", "inline": False},
+            {"name": "Daftar Slot Tersedia", "value": chunk_str, "inline": False},
+            {"name": "Tautan Pembelian", "value": f"🔗 [**Buka Halaman Event JKT48**]({EXCLUSIVE_URL})", "inline": False}
+        ]
+
+        send_discord_embed(
+            title="🚀 STATUS AWAL 2-SHOT JKT48",
+            color=COLOR_GREEN,
+            fields=fields
+        )
+    else:
+        send_discord_embed(
+            title="🚀 STATUS AWAL 2-SHOT JKT48",
+            color=COLOR_RED,
+            description="❌ Saat ini seluruh slot tercatat **Sold Out**.\nBot akan terus memantau penambahan tiket secara real-time."
+        )
+
+    # ----------------------------------------------------------------
+    # FASE 2: LOOP MONITORING RESTOCK
+    # ----------------------------------------------------------------
+    print(f"\nMemasuki fase pemantauan. Mengecek restock setiap {CHECK_INTERVAL} detik...")
+    
+    # Inisialisasi waktu agar bot tidak mengirim rekap ganda jika dinyalakan tepat jam 8
+    now_init = datetime.datetime.now()
+    last_recap_key = (now_init.year, now_init.month, now_init.day, now_init.hour)
+
+    while True:
+        time.sleep(CHECK_INTERVAL)
+        
+        data = fetch_api()
+        if not data: 
+            continue
+        
+        curr_members = parse_api_data(data)
+        if not curr_members: 
+            continue
+        
+        curr_state = {m["id"]: m for m in curr_members}
+        
+        for uid, curr_item in curr_state.items():
+            prev_item = prev_state.get(uid)
             
-            if res.status_code != 200:
-                print(f"⚠️ Gagal akses API bulanan (Status Code: {res.status_code})")
-                continue
+            if prev_item is not None:
+                prev_q = prev_item["quota"]
+                curr_q = curr_item["quota"]
 
-            data = res.json()
-            if not data.get("status"):
-                continue
-
-            schedules = data.get("data", [])
-            for show in schedules:
-                if show.get("type") != "SHOW":
-                    continue
-
-                show_id = str(show.get("schedule_id"))
-                ref_code = show.get("reference_code")
-                show_date_str = show.get("date")
-
-                if not ref_code or not show_date_str:
-                    continue
-
-                show_date = datetime.datetime.strptime(show_date_str, "%Y-%m-%d").date()
-                
-                if now.date() <= show_date <= now.date() + datetime.timedelta(days=14):
-                    scanned_shows_count += 1
+                # Mendeteksi penambahan kuota angka (Restock)
+                if curr_q > prev_q:
+                    added_qty = curr_q - prev_q
                     
-                    detail_url = f"https://jkt48.com/api/v1/theater-shows/{ref_code}?lang=id"
-                    detail_res = requests.get(detail_url, headers=HEADERS, impersonate="chrome", timeout=15)
-                    
-                    if detail_res.status_code != 200:
-                        continue
+                    # Akumulasi tiket restock ke dalam dict rekap
+                    restocked_data[uid] = restocked_data.get(uid, 0) + added_qty
 
-                    detail_data = detail_res.json()
+                    # Format UI Embed Grid
+                    fields = [
+                        {"name": "Nama Member", "value": f"**{curr_item['name']}**", "inline": True},
+                        {"name": "Sesi / Jalur", "value": f"`{curr_item['session']}` • `{curr_item['track']}`", "inline": True},
+                        {"name": "\u200B", "value": "\u200B", "inline": True}, 
+                        {"name": "Penambahan Stok", "value": f"📈 **+{added_qty} Tiket Baru**", "inline": True},
+                        {"name": "Sisa Kuota Total", "value": f"🎫 **{curr_q} Tiket** Tersedia", "inline": True},
+                        {"name": "Langkah Cepat", "value": f"⚡ [**KLIK DI SINI UNTUK LANGSUNG BELI**]({EXCLUSIVE_URL})", "inline": False}
+                    ]
 
-                    if detail_data.get("status") and "data" in detail_data:
-                        members = detail_data["data"].get("jkt48_member", [])
+                    # A. RESTOCK TARGET KHUSUS
+                    if curr_item["name"] in SPECIAL_TARGETS:
+                        print(f"[{time.strftime('%H:%M:%S')}] 🌟🎉 SPECIAL RESTOCK: {curr_item['name']} (+{added_qty} Tiket | Total: {curr_q})")
                         
-                        found = []
-                        for m in members:
-                            m_name = m.get("name", "").lower()
-                            if "grace octaviani" in m_name or "gracie" in m_name:
-                                if "Gracie 🦖" not in found:
-                                    found.append("Gracie 🦖")
-                            if "michelle alexandra" in m_name or "michie" in m_name:
-                                if "Michie 🐰" not in found:
-                                    found.append("Michie 🐰")
+                        send_discord_embed(
+                            title="🌟🚨 SPECIAL OSHI RESTOCK ALERT! 🚨🌟",
+                            color=COLOR_GOLD,
+                            fields=fields,
+                            content_text="@everyone **OSHI KAMU BARU SAJA RESTOCK!**"
+                        )
 
-                        if found:
-                            found_any = True
-                            print(f"🎯 Ditemukan Oshi ({', '.join(found)}) pada show: {show.get('title')} ({show_date_str})")
-                            
-                            if show_id not in sent_shows:
-                                send_discord_notification(show, found, ref_code, detail_data["data"])
-                                sent_shows.add(show_id)
-                            else:
-                                print(f"ℹ️ Show ID {show_id} sudah pernah dinotifikasi sebelumnya.")
+                    # B. RESTOCK MEMBER UMUM
+                    else:
+                        print(f"[{time.strftime('%H:%M:%S')}] 🎉 RESTOCK: {curr_item['name']} (+{added_qty} Tiket | Total: {curr_q})")
+                        
+                        send_discord_embed(
+                            title="🚨 TICKET RESTOCK DETECTED",
+                            color=COLOR_BLUE,
+                            fields=fields
+                        )
 
-        except Exception as e:
-            print(f"❌ Terjadi kesalahan pada proses scan: {e}")
+        # ----------------------------------------------------------------
+        # FASE 3: REKAP TERJADWAL (JAM 08:00 & 20:00)
+        # ----------------------------------------------------------------
+        now = datetime.datetime.now()
+        
+        # Mengecek apakah jam saat ini adalah 8 Pagi (8) atau 8 Malam (20)
+        if now.hour in (8, 20):
+            current_key = (now.year, now.month, now.day, now.hour)
+            
+            # Memastikan rekap hanya dikirim 1 kali di jam tersebut
+            if current_key != last_recap_key:
+                print(f"[{now.strftime('%H:%M:%S')}] 📊 Mengirim rekap terjadwal pukul {now.strftime('%H:00')}...")
+                available_recap = [m for m in curr_members if m["quota"] > 0]
+                
+                if available_recap:
+                    lines = []
+                    for m in available_recap:
+                        if m["id"] in restocked_data:
+                            added_amt = restocked_data[m["id"]]
+                            lines.append(f"• **{m['name']}** — `{m['session']}` | `{m['track']}` — Sisa: **{m['quota']}** 📈 `[+{added_amt} Stok Masuk]`")
+                        else:
+                            lines.append(f"• **{m['name']}** — `{m['session']}` | `{m['track']}` — Sisa: **{m['quota']}**")
 
-    save_sent_shows(sent_shows)
-    
-    print(f"📊 Selesai memindai {scanned_shows_count} show pertunjukan.")
-    if not found_any:
-        print("ℹ️ Tidak ada jadwal Gracie atau Michie yang ditemukan untuk 14 hari ke depan.")
+                    content_body = "\n".join(lines[:25])
+                    if len(lines) > 25:
+                        content_body += f"\n\n*...dan {len(lines) - 25} slot lainnya.*"
+
+                    fields = [
+                        {"name": "Daftar Slot Aktif", "value": content_body, "inline": False},
+                        {"name": "Beli Tiket", "value": f"🔗 [**Halaman Pembelian Official**]({EXCLUSIVE_URL})", "inline": False}
+                    ]
+
+                    send_discord_embed(
+                        title=f"📊 REKAP KETERSEDIAAN TIKET ({now.strftime('%H:00')})",
+                        color=COLOR_PURPLE,
+                        fields=fields
+                    )
+                else:
+                    send_discord_embed(
+                        title=f"📊 REKAP KETERSEDIAAN TIKET ({now.strftime('%H:00')})",
+                        color=COLOR_RED,
+                        description="❌ Saat ini seluruh kuota tiket dalam kondisi **Sold Out**."
+                    )
+
+                # Update key rekap & reset tracker stok
+                last_recap_key = current_key
+                restocked_data.clear()
+
+        prev_state = curr_state
 
 if __name__ == "__main__":
-    check_schedules()
+    try:
+        main()
+    except KeyboardInterrupt:
+        print("\n🛑 Bot dihentikan.")
